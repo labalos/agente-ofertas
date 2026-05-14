@@ -179,82 +179,63 @@ def extraer_mammut(soup):
     if not soup:
         return productos
     
-    # Mammut usa divs con clase product-item
-    items = soup.find_all('div', class_=re.compile(r'product-item|product-tile|product-card'))
+    # GUARDAR HTML PARA DEBUG
+    try:
+        with open('debug_mammut.html', 'w', encoding='utf-8') as f:
+            f.write(str(soup)[:100000])
+        log("HTML guardado en debug_mammut.html")
+    except Exception as e:
+        log(f"Error guardando HTML: {e}")
     
-    if not items:
-        # Fallback: buscar articles o divs con data-product
-        items = soup.find_all('article') or soup.find_all('div', {'data-product-id': True})
+    # Buscar TODOS los enlaces que contienen /p/ (productos)
+    links = soup.find_all('a', href=re.compile(r'/p/\d+'))
+    log(f"Links a productos encontrados: {len(links)}")
     
-    # Si aún no hay items, buscar por enlaces a productos
-    if not items:
-        links = soup.find_all('a', href=re.compile(r'/p/\d+|/product/'))
-        # Agrupar por contenedor padre
-        items = []
-        for link in links:
-            parent = link.find_parent('div', class_=re.compile(r'product|item|tile'))
-            if parent and parent not in items:
-                items.append(parent)
+    # Mostrar los primeros 3 links para ver estructura
+    for i, link in enumerate(links[:3]):
+        log(f"Link {i}: {link.get('href', 'N/A')[:80]}")
+        # Buscar precio cerca del link
+        parent = link.find_parent('div', class_=re.compile(r'.+'))
+        if parent:
+            precio = parent.find(string=re.compile(r'\$\d+'))
+            if precio:
+                log(f"  Precio cercano: {precio.strip()[:50]}")
     
-    log(f"Mammut items: {len(items)}")
+    # Intentar extraer productos de los links
+    items = []
+    for link in links:
+        parent = link.find_parent('div', class_=re.compile(r'.+'))
+        if parent and parent not in items:
+            items.append(parent)
+    
+    log(f"Mammut items únicos: {len(items)}")
     
     for item in items:
         try:
-            # Nombre - buscar en múltiples lugares
-            nombre_elem = (
-                item.select_one('.product-name') or
-                item.select_one('.product-title') or
-                item.select_one('h2 a') or
-                item.select_one('h3 a') or
-                item.find('a', href=re.compile(r'/p/\d+|/product/'))
-            )
-            nombre = nombre_elem.get_text(strip=True) if nombre_elem else "Producto Mammut"
+            # Nombre del producto
+            nombre_elem = link.find('span') or link
+            nombre = nombre_elem.get_text(strip=True) if hasattr(nombre_elem, 'get_text') else str(nombre_elem)
             
-            # Precio - buscar spans con clase price
-            precio_elem = (
-                item.select_one('.special-price .price') or
-                item.select_one('.price') or
-                item.select_one('.product-price') or
-                item.select_one('[data-price]') or
-                item.find('span', class_=re.compile(r'price')) or
-                item.find(string=re.compile(r'\$\d+'))
-            )
+            # Buscar precio en el contenedor padre o abuelo
+            precio = None
+            for ancestor in [item, item.find_parent(), item.find_parent().find_parent() if item.find_parent() else None]:
+                if ancestor:
+                    precio_elem = ancestor.find(string=re.compile(r'\$\d[\d,]*\.?\d*'))
+                    if precio_elem:
+                        precio = extraer_numero(precio_elem)
+                        if precio:
+                            break
             
-            if not precio_elem:
+            if not precio:
                 continue
-            
-            precio_num = extraer_numero(precio_elem)
-            if not precio_num:
-                continue
-            
-            # Precio original
-            original_elem = (
-                item.select_one('.old-price .price') or
-                item.select_one('.was-price') or
-                item.select_one('.original-price') or
-                item.find('span', class_=re.compile(r'old|original|was|compare'))
-            )
-            original_num = extraer_numero(original_elem) if original_elem else None
-            
-            descuento = calcular_descuento(original_num, precio_num)
-            
-            # Link del producto
-            link_elem = item.find('a', href=re.compile(r'/p/\d+|/product/'))
-            product_url = ""
-            if link_elem and link_elem.get('href'):
-                href = link_elem['href']
-                if href.startswith('/'):
-                    product_url = f"https://www.mammut.com{href}"
-                else:
-                    product_url = href
             
             productos.append({
                 'nombre': nombre[:150],
-                'precio': precio_num,
-                'precio_original': original_num,
-                'descuento_pct': descuento,
+                'precio': precio,
+                'precio_original': None,
+                'descuento_pct': 0,
                 'plataforma': 'Mammut',
-                'url': product_url or "https://www.mammut.com"
+                'url': f"https://www.mammut.com{link['href']}" if link.get('href', '').startswith('/') else link.get('href', 'https://www.mammut.com')
             })
             
         except Exception as e:
