@@ -53,10 +53,10 @@ def detectar_plataforma(url):
 def scrapear_pagina(url):
     try:
         log(f"Descargando: {url[:80]}...")
-        time.sleep(random.uniform(2, 5))
+        time.sleep(random.uniform(1, 2))
         
         session = requests.Session()
-        response = session.get(url, headers=HEADERS, timeout=20)
+        response = session.get(url, headers=HEADERS, timeout=10)
         
         log(f"Status: {response.status_code} | Tamaño: {len(response.text)} chars")
         
