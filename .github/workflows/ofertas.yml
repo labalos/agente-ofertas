@@ -37,11 +37,13 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scraper.py
       
-      - name: Guardar historial
+          - name: Guardar historial y debug
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: historial-ofertas
-          path: historial.json
+          name: debug-files
+          path: |
+            historial.json
+            debug_*.html
           if-no-files-found: ignore
-          retention-days: 30
+          retention-days: 7 
