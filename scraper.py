@@ -56,7 +56,7 @@ def scrapear_pagina(url):
         time.sleep(random.uniform(1, 2))
         
         session = requests.Session()
-        response = session.get(url, headers=HEADERS, timeout=10)
+        response = session.get(url, headers=HEADERS, timeout=30)
         
         log(f"Status: {response.status_code} | Tamaño: {len(response.text)} chars")
         
@@ -268,18 +268,22 @@ def filtrar_ofertas(productos):
 
 def enviar_telegram(mensaje):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        log(f"Telegram no configurado")
-        log(mensaje[:300])
+        log("Telegram no configurado")
         return
+    
+    if not mensaje or mensaje.strip() == "":
+        mensaje = "ℹ️ Revisión completada. Sin ofertas que cumplan criterios."
     
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         r = requests.post(url, json={
             "chat_id": TELEGRAM_CHAT_ID,
-            "text": mensaje,
+            "text": mensaje[:4000],  # Límite Telegram
             "parse_mode": "HTML"
         }, timeout=15)
         log(f"Telegram: {r.status_code}")
+        if r.status_code != 200:
+            log(f"Telegram error: {r.text}")
     except Exception as e:
         log(f"Error Telegram: {e}")
 
