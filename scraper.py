@@ -16,7 +16,6 @@ URLS = [
     os.getenv("URL_5", ""),
 ]
 
-# Filtrar vacíos
 URLS = [u for u in URLS if u]
 
 PRECIO_MAXIMO = float(os.getenv("PRICE_THRESHOLD", "150"))
@@ -32,6 +31,9 @@ HEADERS = {
     'DNT': '1',
     'Connection': 'keep-alive',
     'Upgrade-Insecure-Requests': '1',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
 }
 
 def log(mensaje):
@@ -47,13 +49,15 @@ def detectar_plataforma(url):
         return 'walmart'
     elif 'mammut' in url_lower:
         return 'mammut'
+    elif 'wornwear' in url_lower or 'patagonia.com' in url_lower:
+        return 'patagonia'
     else:
         return 'rei'
 
 def scrapear_pagina(url):
     try:
         log(f"Descargando: {url[:80]}...")
-        time.sleep(random.uniform(1, 2))
+        time.sleep(random.uniform(1, 3))
         
         session = requests.Session()
         response = session.get(url, headers=HEADERS, timeout=30)
@@ -96,6 +100,237 @@ def calcular_descuento(original, actual):
     if original and original > actual and original > 0:
         return round((1 - actual/original) * 100, 1)
     return 0
+
+def extraer_ebay(soup):
+    productos = []
+    if not soup:
+        return productos
+    
+    # eBay usa li.s-item
+    items = soup.select('li.s-item')
+    
+    if not items:
+        items = soup.find_all('div', class_=re.compile(r's-item|listitem'))
+    
+    log(f"eBay items: {len(items)}")
+    
+    for item in items:
+        try:
+            # Nombre
+            nombre_elem = (
+                item.select_one('.s-item__title span[role="text"]') or
+                item.select_one('.s-item__title') or
+                item.select_one('a.s-item__link')
+            )
+            nombre = ""
+            if nombre_elem:
+                nombre_texto = nombre_elem.get_text(strip=True)
+                nombre = re.sub(r'^(New Listing|Nuevo anuncio)\s*', '', nombre_texto)
+            
+            if not nombre or nombre == "Shop on eBay":
+                continue
+            
+            # Precio
+            precio_elem = (
+                item.select_one('.s-item__price') or
+                item.select_one('[itemprop="price"]')
+            )
+            
+            if not precio_elem:
+                continue
+            
+            precio_texto = precio_elem.get_text(strip=True)
+            precio_num = extraer_numero(precio_texto)
+            
+            if not precio_num:
+                continue
+            
+            # Precio original
+            original_elem = item.select_one('.s-item__original-price, .s-item__trending-price')
+            original_num = extraer_numero(original_elem.get_text()) if original_elem else None
+            
+            # Shipping
+            shipping_elem = item.select_one('.s-item__shipping, .s-item__logisticsCost')
+            shipping = shipping_elem.get_text(strip=True) if shipping_elem else ""
+            
+            # Link
+            link_elem = item.select_one('a.s-item__link')
+            product_url = link_elem['href'] if link_elem and link_elem.get('href') else "https://www.ebay.com"
+            
+            descuento = calcular_descuento(original_num, precio_num)
+            
+            productos.append({
+                'nombre': nombre[:150],
+                'precio': precio_num,
+                'precio_original': original_num,
+                'descuento_pct': descuento,
+                'shipping': shipping,
+                'plataforma': 'eBay',
+                'url': product_url
+            })
+            
+        except Exception as e:
+            continue
+    
+    return productos
+
+def extraer_mammut(soup):
+    productos = []
+    if not soup:
+        return productos
+    
+    # Mammut usa divs con clase product-item
+    items = soup.find_all('div', class_=re.compile(r'product-item|product-tile|product-card'))
+    
+    if not items:
+        # Fallback: buscar articles o divs con data-product
+        items = soup.find_all('article') or soup.find_all('div', {'data-product-id': True})
+    
+    # Si aún no hay items, buscar por enlaces a productos
+    if not items:
+        links = soup.find_all('a', href=re.compile(r'/p/\d+|/product/'))
+        # Agrupar por contenedor padre
+        items = []
+        for link in links:
+            parent = link.find_parent('div', class_=re.compile(r'product|item|tile'))
+            if parent and parent not in items:
+                items.append(parent)
+    
+    log(f"Mammut items: {len(items)}")
+    
+    for item in items:
+        try:
+            # Nombre - buscar en múltiples lugares
+            nombre_elem = (
+                item.select_one('.product-name') or
+                item.select_one('.product-title') or
+                item.select_one('h2 a') or
+                item.select_one('h3 a') or
+                item.find('a', href=re.compile(r'/p/\d+|/product/'))
+            )
+            nombre = nombre_elem.get_text(strip=True) if nombre_elem else "Producto Mammut"
+            
+            # Precio - buscar spans con clase price
+            precio_elem = (
+                item.select_one('.special-price .price') or
+                item.select_one('.price') or
+                item.select_one('.product-price') or
+                item.select_one('[data-price]') or
+                item.find('span', class_=re.compile(r'price')) or
+                item.find(string=re.compile(r'\$\d+'))
+            )
+            
+            if not precio_elem:
+                continue
+            
+            precio_num = extraer_numero(precio_elem)
+            if not precio_num:
+                continue
+            
+            # Precio original
+            original_elem = (
+                item.select_one('.old-price .price') or
+                item.select_one('.was-price') or
+                item.select_one('.original-price') or
+                item.find('span', class_=re.compile(r'old|original|was|compare'))
+            )
+            original_num = extraer_numero(original_elem) if original_elem else None
+            
+            descuento = calcular_descuento(original_num, precio_num)
+            
+            # Link del producto
+            link_elem = item.find('a', href=re.compile(r'/p/\d+|/product/'))
+            product_url = ""
+            if link_elem and link_elem.get('href'):
+                href = link_elem['href']
+                if href.startswith('/'):
+                    product_url = f"https://www.mammut.com{href}"
+                else:
+                    product_url = href
+            
+            productos.append({
+                'nombre': nombre[:150],
+                'precio': precio_num,
+                'precio_original': original_num,
+                'descuento_pct': descuento,
+                'plataforma': 'Mammut',
+                'url': product_url or "https://www.mammut.com"
+            })
+            
+        except Exception as e:
+            continue
+    
+    return productos
+
+def extraer_patagonia(soup):
+    productos = []
+    if not soup:
+        return productos
+    
+    # Patagonia Worn Wear usa divs con clase product
+    items = soup.find_all('div', class_=re.compile(r'product|product-tile|product-card'))
+    
+    if not items:
+        items = soup.find_all('article') or soup.find_all('li', class_=re.compile(r'product'))
+    
+    log(f"Patagonia items: {len(items)}")
+    
+    for item in items:
+        try:
+            nombre_elem = (
+                item.select_one('.product-name') or
+                item.select_one('.product-title') or
+                item.select_one('h2') or
+                item.select_one('h3') or
+                item.find('a', href=re.compile(r'/product/|/shop/'))
+            )
+            nombre = nombre_elem.get_text(strip=True) if nombre_elem else "Producto Patagonia"
+            
+            precio_elem = (
+                item.select_one('.price') or
+                item.select_one('.product-price') or
+                item.select_one('[data-price]') or
+                item.find(string=re.compile(r'\$\d+'))
+            )
+            
+            if not precio_elem:
+                continue
+            
+            precio_num = extraer_numero(precio_elem)
+            if not precio_num:
+                continue
+            
+            original_elem = (
+                item.select_one('.compare-price') or
+                item.select_one('.was-price') or
+                item.find('span', class_=re.compile(r'compare|original'))
+            )
+            original_num = extraer_numero(original_elem) if original_elem else None
+            
+            descuento = calcular_descuento(original_num, precio_num)
+            
+            link_elem = item.find('a', href=re.compile(r'/product/|/shop/'))
+            product_url = ""
+            if link_elem and link_elem.get('href'):
+                href = link_elem['href']
+                if href.startswith('/'):
+                    product_url = f"https://wornwear.patagonia.com{href}"
+                else:
+                    product_url = href
+            
+            productos.append({
+                'nombre': nombre[:150],
+                'precio': precio_num,
+                'precio_original': original_num,
+                'descuento_pct': descuento,
+                'plataforma': 'Patagonia Worn Wear',
+                'url': product_url or "https://wornwear.patagonia.com"
+            })
+            
+        except Exception as e:
+            continue
+    
+    return productos
 
 def extraer_rei(soup):
     productos = []
@@ -155,104 +390,6 @@ def extraer_rei(soup):
     
     return productos
 
-def extraer_mammut(soup):
-    productos = []
-    if not soup:
-        return productos
-    
-    items = soup.find_all('div', class_=re.compile(r'product-item|product-tile|product-card'))
-    if not items:
-        items = soup.find_all('article') or soup.find_all('div', {'data-product-id': True})
-    
-    log(f"Mammut items: {len(items)}")
-    
-    for item in items:
-        try:
-            nombre_elem = (
-                item.select_one('.product-name') or
-                item.select_one('h2 a') or
-                item.select_one('.product-title') or
-                item.find('a', href=re.compile(r'/p/|/product/'))
-            )
-            nombre = nombre_elem.get_text(strip=True) if nombre_elem else "Producto Mammut"
-            
-            precio_elem = (
-                item.select_one('.special-price .price') or
-                item.select_one('.price') or
-                item.select_one('.product-price') or
-                item.find('span', class_=re.compile(r'price'))
-            )
-            
-            if not precio_elem:
-                continue
-            
-            precio_num = extraer_numero(precio_elem)
-            if not precio_num:
-                continue
-            
-            original_elem = (
-                item.select_one('.old-price .price') or
-                item.select_one('.was-price') or
-                item.find('span', class_=re.compile(r'old|original|was'))
-            )
-            original_num = extraer_numero(original_elem) if original_elem else None
-            
-            descuento = calcular_descuento(original_num, precio_num)
-            
-            productos.append({
-                'nombre': nombre[:150],
-                'precio': precio_num,
-                'precio_original': original_num,
-                'descuento_pct': descuento,
-                'plataforma': 'Mammut',
-                'url': 'https://www.mammut.com'
-            })
-            
-        except Exception as e:
-            continue
-    
-    return productos
-
-def extraer_generico(soup, plataforma):
-    productos = []
-    if not soup:
-        return productos
-    
-    items = soup.find_all('div', class_=re.compile(r'product|item|listing'))
-    if not items:
-        items = soup.find_all('article') or soup.find_all('li')
-    
-    log(f"{plataforma} items: {len(items)}")
-    
-    for item in items:
-        try:
-            nombre_elem = item.find(['h2', 'h3', 'h4']) or item.select_one('.title, .name')
-            nombre = nombre_elem.get_text(strip=True) if nombre_elem else f"Producto {plataforma}"
-            
-            precio_elem = item.find(string=re.compile(r'\$[\d,]+'))
-            if precio_elem:
-                precio_num = extraer_numero(precio_elem)
-            else:
-                precio_elem = item.find('span', class_=re.compile(r'price'))
-                precio_num = extraer_numero(precio_elem) if precio_elem else None
-            
-            if not precio_num:
-                continue
-            
-            productos.append({
-                'nombre': nombre[:150],
-                'precio': precio_num,
-                'precio_original': None,
-                'descuento_pct': 0,
-                'plataforma': plataforma,
-                'url': 'https://example.com'
-            })
-            
-        except Exception as e:
-            continue
-    
-    return productos
-
 def filtrar_ofertas(productos):
     ofertas = []
     for p in productos:
@@ -278,12 +415,12 @@ def enviar_telegram(mensaje):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         r = requests.post(url, json={
             "chat_id": TELEGRAM_CHAT_ID,
-            "text": mensaje[:4000],  # Límite Telegram
+            "text": mensaje[:4000],
             "parse_mode": "HTML"
         }, timeout=15)
         log(f"Telegram: {r.status_code}")
         if r.status_code != 200:
-            log(f"Telegram error: {r.text}")
+            log(f"Telegram error: {r.text[:200]}")
     except Exception as e:
         log(f"Error Telegram: {e}")
 
@@ -299,8 +436,10 @@ def formatear_alerta(ofertas_por_plataforma):
         
         for o in ofertas[:5]:
             desc = f" (-{o['descuento_pct']}%)" if o.get('descuento_pct') else ""
+            shipping = f" 🚚 {o['shipping']}" if o.get('shipping') else ""
+            
             msg += f"• <b>{o['nombre'][:80]}</b>\n"
-            msg += f"  💰 ${o['precio']:.2f}{desc}\n"
+            msg += f"  💰 ${o['precio']:.2f}{desc}{shipping}\n"
             if o.get('precio_original'):
                 msg += f"  ~~${o['precio_original']:.2f}~~\n"
             msg += "\n"
@@ -335,12 +474,16 @@ def procesar_url(url):
     if not soup:
         return []
     
-    if plataforma == 'rei':
-        return extraer_rei(soup)
+    if plataforma == 'ebay':
+        return extraer_ebay(soup)
     elif plataforma == 'mammut':
         return extraer_mammut(soup)
+    elif plataforma == 'patagonia':
+        return extraer_patagonia(soup)
+    elif plataforma == 'rei':
+        return extraer_rei(soup)
     else:
-        return extraer_generico(soup, plataforma)
+        return extraer_rei(soup)
 
 def main():
     log("=" * 60)
@@ -382,7 +525,7 @@ def main():
         enviar_telegram(mensaje)
         log(f"\n✅ Alerta enviada")
     else:
-        resumen = f"ℹ️ Revisión completada. {len(todos_productos)} productos revisados. Sin ofertas."
+        resumen = f"ℹ️ Revisión completada. {len(todos_productos)} productos revisados. Sin ofertas que cumplan criterios."
         enviar_telegram(resumen)
         log(f"\nℹ️ Sin ofertas")
     
