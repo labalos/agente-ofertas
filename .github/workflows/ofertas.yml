@@ -1,0 +1,37 @@
+name: Agente de Ofertas
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  buscar-ofertas:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+      
+      - name: Ejecutar scraper
+        env:
+          TARGET_URL: ${{ secrets.TARGET_URL }}
+          PRICE_THRESHOLD: ${{ secrets.PRICE_THRESHOLD }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+        run: python scraper.py
+      
+      - name: Guardar historial
+        uses: actions/upload-artifact@v4
+        with:
+          name: historial-ofertas
+          path: historial.json
+          retention-days: 30
