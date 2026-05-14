@@ -1,13 +1,17 @@
-name: Agente de Ofertas
+            name: Agente de Ofertas
 
 on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   buscar-ofertas:
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout código
         uses: actions/checkout@v4
@@ -22,16 +26,22 @@ jobs:
       
       - name: Ejecutar scraper
         env:
-          TARGET_URL: ${{ secrets.TARGET_URL }}
+          URL_1: ${{ secrets.URL_1 }}
+          URL_2: ${{ secrets.URL_2 }}
+          URL_3: ${{ secrets.URL_3 }}
+          URL_4: ${{ secrets.URL_4 }}
+          URL_5: ${{ secrets.URL_5 }}
           PRICE_THRESHOLD: ${{ secrets.PRICE_THRESHOLD }}
+          DISCOUNT_THRESHOLD: ${{ secrets.DISCOUNT_THRESHOLD }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
         run: python scraper.py
       
       - name: Guardar historial
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: historial-ofertas
           path: historial.json
+          if-no-files-found: ignore
           retention-days: 30
